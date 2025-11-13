@@ -1,0 +1,14 @@
+numpy
+pandas
+scipy
+statsmodels
+scikit-learn
+xgboost
+d3rlpy
+aiohttp
+tqdm
+prometheus-client
+pydantic
+pyyaml
+pytz
+nest-asyncio
