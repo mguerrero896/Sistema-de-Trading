@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from typing import List, Optional
+from typing import List
 
 from ..config import Config
 
@@ -134,14 +134,23 @@ class FeatureEngineer:
         las columnas de features.
         """
         df_feat = df.copy()
+
+        # Features de precio y microestructura
         df_feat = self._price_feats(df_feat)
         df_feat = self._micro_feats(df_feat)
         if self.config.usar_opciones:
             df_feat = self._options_synth(df_feat)
+
+        # Aseguramos que todos los nombres de columna sean strings
+        df_feat.columns = [str(c) for c in df_feat.columns]
+
         # Conversión de fecha a cadena para agrupaciones posteriores
         df_feat["date"] = df_feat["date"].astype(str)
+
         # Identificar columnas de features
         feat_cols = [c for c in df_feat.columns if c.startswith("feat_")]
+
+        # Eliminar filas con NaN en alguna feature
         df_feat = df_feat.dropna(subset=feat_cols).reset_index(drop=True)
         return df_feat
 
@@ -173,7 +182,15 @@ class FeatureEngineer:
         una copia del DataFrame con las columnas de features normalizadas.
         """
         df_norm = df.copy()
+
+        # Asegurar que los nombres de columnas sean strings
+        df_norm.columns = [str(c) for c in df_norm.columns]
+
         feat_cols = [c for c in df_norm.columns if c.startswith("feat_")]
+
+        # Nos aseguramos de trabajar con fechas como string
+        df_norm["date"] = df_norm["date"].astype(str)
+
         for d in df_norm["date"].unique():
             m = df_norm["date"] == d
             if method == "standardize":
