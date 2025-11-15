@@ -48,6 +48,24 @@ class MLPipeline:
         self.calibrators: Dict[str, IsotonicRegression] = {}
 
     # ------------------------------------------------------------------
+    # Utilidad interna: limpieza de datos
+    # ------------------------------------------------------------------
+    def _clean_df(
+        self,
+        df: pd.DataFrame,
+        feature_cols: List[str],
+        label_col: str,
+    ) -> pd.DataFrame:
+        """Devuelve un DataFrame sin NaN/inf en features ni en la etiqueta."""
+        cols = list(feature_cols) + [label_col]
+        df_clean = (
+            df[cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna(subset=cols)
+        )
+        return df_clean
+
+    # ------------------------------------------------------------------
     # Entrenamiento
     # ------------------------------------------------------------------
     def fit(
@@ -64,34 +82,41 @@ class MLPipeline:
         opción ``config.usar_calibracion_isotonica`` está activada, se entrena
         un modelo de regresión isotónica para ajustar la escala de las
         predicciones a los retornos observados en validación.
-
-        Parámetros
-        ----------
-        df_train : DataFrame
-            Datos de entrenamiento con columnas de características y la
-            columna de objetivo.
-        df_val : DataFrame o None
-            Datos de validación para calibrar las predicciones. Si es None,
-            no se realiza calibración isotónica.
-        feature_cols : list
-            Lista de nombres de columnas de características.
-        label_col : str
-            Nombre de la columna objetivo (retorno futuro).
         """
-        X_train = df_train[feature_cols].values
-        y_train = df_train[label_col].values
+        # Reiniciar modelos y calibradores por si se reentrena
+        self.models = {}
+        self.calibrators = {}
+
+        # --- limpiar y preparar TRAIN ---
+        df_train_clean = self._clean_df(df_train, feature_cols, label_col)
+        if df_train_clean.empty:
+            raise ValueError(
+                "Después de limpiar NaN/inf no quedan filas de entrenamiento. "
+                "Revisa las ventanas de features o la calidad de los datos."
+            )
+        X_train = df_train_clean[feature_cols].values
+        y_train = df_train_clean[label_col].values
+
+        # --- limpiar y preparar VALIDACIÓN (opcional) ---
+        has_val = df_val is not None and len(df_val) > 0
+        if has_val:
+            df_val_clean = self._clean_df(df_val, feature_cols, label_col)
+            if df_val_clean.empty:
+                has_val = False  # no hay datos útiles de validación
+            else:
+                X_val = df_val_clean[feature_cols].values
+                y_val = df_val_clean[label_col].values
 
         # Entrenar Ridge Regression
         if "ridge" in self.config.modelos:
             ridge = Ridge(alpha=self.config.ridge_alpha)
             ridge.fit(X_train, y_train)
             self.models["ridge"] = ridge
+
             # Calibración isotónica opcional
-            if self.config.usar_calibracion_isotonica and df_val is not None:
-                X_val = df_val[feature_cols].values
-                y_val = df_val[label_col].values
+            if self.config.usar_calibracion_isotonica and has_val:
                 preds = ridge.predict(X_val)
-                # Evitar valores duplicados ordenando y aplicando pequeño ruido
+                # Evitar problemas numéricos: ordenar
                 order = np.argsort(preds)
                 preds_sorted = preds[order]
                 y_sorted = y_val[order]
@@ -110,9 +135,8 @@ class MLPipeline:
             )
             gbr.fit(X_train, y_train)
             self.models["gradient_boosting"] = gbr
-            if self.config.usar_calibracion_isotonica and df_val is not None:
-                X_val = df_val[feature_cols].values
-                y_val = df_val[label_col].values
+
+            if self.config.usar_calibracion_isotonica and has_val:
                 preds = gbr.predict(X_val)
                 order = np.argsort(preds)
                 preds_sorted = preds[order]
@@ -131,21 +155,17 @@ class MLPipeline:
         ``pred_<modelo>`` para cada modelo entrenado. Si existe un
         calibrador isotónico para un modelo, se aplica al vector de
         predicciones antes de devolverlo.
-
-        Parámetros
-        ----------
-        df : DataFrame
-            Datos sobre los que realizar predicciones.
-        feature_cols : list
-            Lista de nombres de columnas de características.
-
-        Retorna
-        -------
-        DataFrame
-            Copia de ``df`` con columnas ``pred_<nombre_modelo>`` añadidas.
         """
         result = df.copy()
-        X = df[feature_cols].values
+
+        # Rellenar NaN/inf en features para no romper en predicción
+        X_feats = (
+            df[feature_cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+        X = X_feats.values
+
         for name, model in self.models.items():
             preds = model.predict(X)
             # Aplicar calibración isotónica si está disponible
@@ -165,25 +185,22 @@ class MLPipeline:
 
         Se calcula el error cuadrático medio (MSE) y el coeficiente de
         determinación :math:`R^2` para cada modelo entrenado.
-
-        Parámetros
-        ----------
-        df : DataFrame
-            Datos de prueba o validación.
-        feature_cols : list
-            Lista de nombres de características.
-        label_col : str
-            Nombre de la columna objetivo.
-
-        Retorna
-        -------
-        dict
-            Diccionario cuyo key es el nombre del modelo y cuyo value es otro
-            diccionario con claves ``mse`` y ``r2``.
         """
         metrics: Dict[str, Dict[str, float]] = {}
-        X = df[feature_cols].values
-        y_true = df[label_col].values
+
+        # Limpiar conjunto de evaluación
+        cols = list(feature_cols) + [label_col]
+        df_eval = (
+            df[cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna(subset=cols)
+        )
+        if df_eval.empty:
+            return metrics  # nada que evaluar
+
+        X = df_eval[feature_cols].values
+        y_true = df_eval[label_col].values
+
         for name, model in self.models.items():
             preds = model.predict(X)
             if name in self.calibrators:
@@ -201,20 +218,6 @@ class MLPipeline:
 
         Actualmente se soportan importancias del modelo de Gradient Boosting.
         Para modelos lineales como Ridge se devuelven los coeficientes.
-
-        Parámetros
-        ----------
-        model_name : str
-            Nombre del modelo (por ejemplo ``'ridge'`` o ``'gradient_boosting'``).
-        feature_cols : list
-            Lista de nombres de características que se corresponden con el
-            orden utilizado durante el entrenamiento.
-
-        Retorna
-        -------
-        Series
-            Serie de Pandas con índice ``feature_cols`` y valores de
-            importancia o coeficientes.
         """
         if model_name not in self.models:
             raise ValueError(f"El modelo {model_name} no está entrenado.")
@@ -238,23 +241,11 @@ class MLPipeline:
         sesgadas por comportamientos sectoriales. Dada una columna de
         predicciones y otra de sector, sustrae la media de predicciones
         dentro de cada sector y fecha.
-
-        Parámetros
-        ----------
-        df : DataFrame
-            DataFrame con columnas ``date``, ``pred_col`` y ``sector_col``.
-        pred_col : str
-            Nombre de la columna con predicciones numéricas.
-        sector_col : str
-            Nombre de la columna que indica el sector de cada ticker.
-
-        Retorna
-        -------
-        DataFrame
-            Copia de ``df`` donde la columna ``pred_col`` ha sido
-            neutralizada por sector y fecha.
         """
         out = df.copy()
+        if "date" not in out.columns:
+            raise ValueError("Se requiere una columna 'date' para neutralizar por sector.")
+
         for d in out["date"].unique():
             mask_date = out["date"] == d
             # Calcular la media por sector dentro de la fecha
