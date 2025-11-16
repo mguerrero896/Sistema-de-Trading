@@ -60,6 +60,11 @@ def main(args: argparse.Namespace) -> None:
     # 1. Configuración
     config = Config()
 
+    # Override opcional de la semilla si se pasa por CLI
+    if hasattr(args, "seed") and args.seed is not None:
+        config.random_seed = args.seed
+        print(f"[INFO] Usando random_seed override desde CLI: {config.random_seed}")
+
     # 2. Directorio de ejecución
     run_dir = Path(config.runs_dir) / pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -202,6 +207,13 @@ if __name__ == "__main__":
         default=30,
         help="Número máximo de tickers en el universo",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Semilla aleatoria para reproducibilidad (sobrescribe Config.random_seed)",
+    )
     args = parser.parse_args()
     main(args)
+
 
