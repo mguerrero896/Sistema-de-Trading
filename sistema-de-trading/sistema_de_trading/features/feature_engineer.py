@@ -7,8 +7,8 @@ La clase :class:`FeatureEngineer` agrupa métodos para:
   de precios y volumen relativo).
 * Calcular métricas de microestructura de mercado como spread estimado,
   volatilidad intradía y participación de volumen.
-* Crear características sintéticas de opciones (volatilidad implícita
-  simulada) cuando se activa la bandera correspondiente.
+* Crear opcionalmente características relacionadas con opciones (actualmente
+  sintéticas en la rama principal; en expB NO se usan).
 * Construir etiquetas de rentabilidad futura a distintos horizontes.
 * Normalizar las features por fecha mediante estandarización o ranking.
 
@@ -91,7 +91,7 @@ class FeatureEngineer:
         return df
 
     # ------------------------------------------------------------------
-    # Features sintéticas de opciones
+    # Features sintéticas de opciones (NO usadas en expB)
     # ------------------------------------------------------------------
     def _options_synth(self, df: pd.DataFrame) -> pd.DataFrame:
         """Genera características sintéticas relacionadas con opciones.
@@ -99,6 +99,9 @@ class FeatureEngineer:
         Dado que la obtención de datos de opciones no está disponible
         directamente, se simulan series de volatilidad implícita y otras
         variables a partir de la volatilidad realizada y ruido aleatorio.
+
+        En la rama expB estas features NO se utilizan; el método se mantiene
+        sólo por compatibilidad con otras ramas.
         """
         df = df.copy()
         rng = np.random.default_rng(self.config.random_seed)
@@ -127,11 +130,11 @@ class FeatureEngineer:
     def create_all_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Crea todas las características disponibles a partir del DataFrame de precios.
 
-        Se concatenan las features de precios, microestructura y opciones (si
-        las flags correspondientes están activadas). Las columnas de fecha se
-        convierten a string para facilitar la operación por fecha en el
-        normalizado posterior. Se eliminan las filas con cualquier ``NaN`` en
-        las columnas de features.
+        Se concatenan las features de precios y microestructura (según flags
+        en Config). En expB NO se añaden las sintéticas de opciones. Las
+        columnas de fecha se convierten a string para facilitar la operación
+        por fecha en el normalizado posterior. Se eliminan las filas con
+        cualquier ``NaN`` en las columnas de features.
         """
         df_feat = df.copy()
 
@@ -143,9 +146,9 @@ class FeatureEngineer:
         if self.config.usar_features_micro:
             df_feat = self._micro_feats(df_feat)
 
-        # Features sintéticas de opciones
-        if self.config.usar_opciones and self.config.usar_features_opciones:
-            df_feat = self._options_synth(df_feat)
+        # En expB NO usamos opciones sintéticas:
+        # if self.config.usar_opciones and self.config.usar_features_opciones:
+        #     df_feat = self._options_synth(df_feat)
 
         # Aseguramos que todos los nombres de columna sean strings
         df_feat.columns = [str(c) for c in df_feat.columns]
@@ -195,4 +198,5 @@ class FeatureEngineer:
             else:
                 df_norm.loc[m, feat_cols] = df_norm.loc[m, feat_cols].rank(pct=True)
         return df_norm
+
 
