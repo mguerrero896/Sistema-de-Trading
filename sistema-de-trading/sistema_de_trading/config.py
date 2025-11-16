@@ -51,8 +51,8 @@ class Config:
 
     # Flags de uso de grupos de features (para ablación)
     usar_features_precio: bool = True          # feats de precios/retornos/vol
-    usar_features_micro: bool = True           # feats de microestructura (spread, intradía, participación)
-    usar_features_opciones: bool = True        # feats sintéticas de "opciones" (iv_minus_rv, skew, etc.)
+    usar_features_micro: bool = False           # feats de microestructura (spread, intradía, participación)
+    usar_features_opciones: bool = False        # feats sintéticas de "opciones" (iv_minus_rv, skew, etc.)
 
     # Parámetros de features
     ventanas_rendimiento: List[int] = field(default_factory=lambda: [5, 20, 60])
