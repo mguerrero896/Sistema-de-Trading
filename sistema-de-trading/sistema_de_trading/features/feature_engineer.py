@@ -7,8 +7,8 @@ La clase :class:`FeatureEngineer` agrupa métodos para:
   de precios y volumen relativo).
 * Calcular métricas de microestructura de mercado como spread estimado,
   volatilidad intradía y participación de volumen.
-* Crear características sintéticas de opciones (volatilidad implícita
-  simulada) cuando se activa la bandera correspondiente.
+* Crear características de opciones (en esta rama expOptions se espera que
+  procedan de datos reales agregados, no sintéticos).
 * Construir etiquetas de rentabilidad futura a distintos horizontes.
 * Normalizar las features por fecha mediante estandarización o ranking.
 
@@ -36,12 +36,7 @@ class FeatureEngineer:
     # Features basadas en precios
     # ------------------------------------------------------------------
     def _price_feats(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calcula características derivadas de precios y volumen.
-
-        Se añaden columnas con retornos acumulados para distintas ventanas,
-        volatilidades realizadas, distancias a máximos/mínimos, indicadores de
-        breakout y ratios de volumen.
-        """
+        """Calcula características derivadas de precios y volumen."""
         df = df.sort_values(["ticker", "date"]).copy()
         for t in df["ticker"].unique():
             m = df["ticker"] == t
@@ -71,11 +66,7 @@ class FeatureEngineer:
     # Features de microestructura
     # ------------------------------------------------------------------
     def _micro_feats(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calcula características de microestructura de mercado.
-
-        Incluye la estimación del spread, la volatilidad intradía logarítmica
-        y la participación relativa del volumen.
-        """
+        """Calcula características de microestructura de mercado."""
         df = df.copy()
         # Spread estimado como (high - low) / close
         df["feat_spread_est"] = (df["high"] - df["low"]) / df["close"].replace(0, np.nan)
@@ -91,33 +82,57 @@ class FeatureEngineer:
         return df
 
     # ------------------------------------------------------------------
-    # Features sintéticas de opciones
+    # Features de opciones basadas en trades reales (expOptions)
+    # ------------------------------------------------------------------
+    def _options_real(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Construye features de opciones reales a partir de trades agregados.
+
+        Se asume que df contiene columnas creadas por OptionsTradesLoader:
+        - opt_trades_count
+        - opt_notional
+        - opt_avg_price
+        - opt_price_std
+        - opt_min_price
+        - opt_max_price
+        """
+        df = df.copy()
+
+        if "opt_trades_count" in df.columns:
+            df["feat_opt_trades_count"] = df["opt_trades_count"]
+
+        if "opt_notional" in df.columns:
+            df["feat_opt_notional_log"] = np.log1p(df["opt_notional"])
+
+        if "opt_price_std" in df.columns:
+            df["feat_opt_price_std"] = df["opt_price_std"]
+
+        if "opt_max_price" in df.columns and "opt_min_price" in df.columns:
+            df["feat_opt_price_range"] = df["opt_max_price"] - df["opt_min_price"]
+
+        return df
+
+    # ------------------------------------------------------------------
+    # Features sintéticas de opciones (NO usadas en expOptions)
     # ------------------------------------------------------------------
     def _options_synth(self, df: pd.DataFrame) -> pd.DataFrame:
         """Genera características sintéticas relacionadas con opciones.
 
-        Dado que la obtención de datos de opciones no está disponible
-        directamente, se simulan series de volatilidad implícita y otras
-        variables a partir de la volatilidad realizada y ruido aleatorio.
+        En la rama expOptions NO se utiliza este método; se mantiene únicamente
+        por compatibilidad. Las únicas features de opciones que se usan aquí
+        son las basadas en datos reales (_options_real).
         """
         df = df.copy()
         rng = np.random.default_rng(self.config.random_seed)
         for t in df["ticker"].unique():
             m = df["ticker"] == t
             s = df.loc[m]
-            # Volatilidad realizada a 20 días anualizada
             rv = s["close"].pct_change().rolling(20).std() * np.sqrt(252)
-            # Se simula una volatilidad implícita correlacionada con la realizada
             noise = rng.normal(0, 0.05, len(s))
             iv = rv * (1 + noise)
             df.loc[m, "feat_iv_minus_rv"] = iv - rv
-            # Pendiente temporal de la IV: relación simple IV - 0.9
             df.loc[m, "feat_iv_term_slope"] = iv - 0.9 * rv
-            # Asimetría sintética del orden del 10 %
             df.loc[m, "feat_skew"] = rng.normal(0, 0.1, len(s))
-            # Cambios relativos de volumen como proxy de la variación del interés abierto
             df.loc[m, "feat_coil_change"] = s["volume"].pct_change().fillna(0) * 0.5
-            # Ratio call/put sintético alrededor de 1 con dispersión
             df.loc[m, "feat_call_put_ratio"] = 1 + rng.normal(0, 0.2, len(s))
         return df
 
@@ -127,11 +142,14 @@ class FeatureEngineer:
     def create_all_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Crea todas las características disponibles a partir del DataFrame de precios.
 
-        Se concatenan las features de precios, microestructura y opciones (si
-        las flags correspondientes están activadas). Las columnas de fecha se
-        convierten a string para facilitar la operación por fecha en el
-        normalizado posterior. Se eliminan las filas con cualquier ``NaN`` en
-        las columnas de features.
+        En expOptions se concatenan:
+        - features de precios (si usar_features_precio),
+        - features de microestructura (si usar_features_micro),
+        - features de opciones reales (si usar_features_opciones).
+
+        Las columnas de fecha se convierten a string para facilitar la operación
+        por fecha en el normalizado posterior. Se eliminan las filas con
+        cualquier ``NaN`` en las columnas de features.
         """
         df_feat = df.copy()
 
@@ -143,9 +161,9 @@ class FeatureEngineer:
         if self.config.usar_features_micro:
             df_feat = self._micro_feats(df_feat)
 
-        # Features sintéticas de opciones
-        if self.config.usar_opciones and self.config.usar_features_opciones:
-            df_feat = self._options_synth(df_feat)
+        # Features de opciones REAL (no sintéticas) en expOptions
+        if self.config.usar_features_opciones:
+            df_feat = self._options_real(df_feat)
 
         # Aseguramos que todos los nombres de columna sean strings
         df_feat.columns = [str(c) for c in df_feat.columns]
@@ -195,4 +213,5 @@ class FeatureEngineer:
             else:
                 df_norm.loc[m, feat_cols] = df_norm.loc[m, feat_cols].rank(pct=True)
         return df_norm
+
 
