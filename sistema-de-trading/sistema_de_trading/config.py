@@ -35,10 +35,10 @@ class Config:
     fmp_api_key: str = field(default_factory=lambda: os.getenv("FMP_API_KEY", ""))
 
     # Parámetros del universo y limpieza de datos
-    precio_min: float = 5.0
-    volumen_medio_min: int = 1_000_000
+    precio_min: float = 1.0
+    volumen_medio_min: int = 0
     ventana_volumen: int = 20
-
+    
     anos_train: int = 7
     anos_val: int = 1
     anos_test: int = 1
