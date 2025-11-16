@@ -128,17 +128,23 @@ class FeatureEngineer:
         """Crea todas las características disponibles a partir del DataFrame de precios.
 
         Se concatenan las features de precios, microestructura y opciones (si
-        ``config.usar_opciones`` es ``True``). Las columnas de fecha se
+        las flags correspondientes están activadas). Las columnas de fecha se
         convierten a string para facilitar la operación por fecha en el
         normalizado posterior. Se eliminan las filas con cualquier ``NaN`` en
         las columnas de features.
         """
         df_feat = df.copy()
 
-        # Features de precio y microestructura
-        df_feat = self._price_feats(df_feat)
-        df_feat = self._micro_feats(df_feat)
-        if self.config.usar_opciones:
+        # Features de precio
+        if self.config.usar_features_precio:
+            df_feat = self._price_feats(df_feat)
+
+        # Features de microestructura
+        if self.config.usar_features_micro:
+            df_feat = self._micro_feats(df_feat)
+
+        # Features sintéticas de opciones
+        if self.config.usar_opciones and self.config.usar_features_opciones:
             df_feat = self._options_synth(df_feat)
 
         # Aseguramos que todos los nombres de columna sean strings
@@ -158,12 +164,7 @@ class FeatureEngineer:
     # Etiquetas
     # ------------------------------------------------------------------
     def create_labels(self, df: pd.DataFrame, k_values: List[int]) -> pd.DataFrame:
-        """Añade columnas de etiquetas de rentabilidad futura para cada horizonte en ``k_values``.
-
-        La etiqueta ``label_k`` se define como ``(precio_{t+k} / precio_t) - 1``. Si
-        el horizonte se extiende más allá del final de la serie, la etiqueta se
-        rellena con ``NaN``.
-        """
+        """Añade columnas de etiquetas de rentabilidad futura para cada horizonte en ``k_values``."""
         df = df.sort_values(["ticker", "date"]).copy()
         for k in k_values:
             exit_prices = df.groupby("ticker")["close"].shift(-k)
@@ -174,13 +175,7 @@ class FeatureEngineer:
     # Normalización
     # ------------------------------------------------------------------
     def normalize_features(self, df: pd.DataFrame, method: str = "standardize") -> pd.DataFrame:
-        """Normaliza las columnas de features por fecha.
-
-        Si ``method`` es ``"standardize"``, se restan medias y dividen por
-        desviaciones típicas; si ``method`` es ``"rank"``, se reemplaza cada
-        valor por su percentil dentro de la misma fecha. Esta función produce
-        una copia del DataFrame con las columnas de features normalizadas.
-        """
+        """Normaliza las columnas de features por fecha."""
         df_norm = df.copy()
 
         # Asegurar que los nombres de columnas sean strings
@@ -198,6 +193,6 @@ class FeatureEngineer:
                 sd = df_norm.loc[m, feat_cols].std().replace(0, np.nan)
                 df_norm.loc[m, feat_cols] = (df_norm.loc[m, feat_cols] - mu) / (sd + 1e-8)
             else:
-                # Ranking porcentual dentro de cada fecha
                 df_norm.loc[m, feat_cols] = df_norm.loc[m, feat_cols].rank(pct=True)
         return df_norm
+
