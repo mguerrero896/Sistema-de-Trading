@@ -73,6 +73,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"Obtenidos {len(tickers)} tickers")
 
     df_prices = loader.download_price_data(tickers, config.fecha_inicio, config.fecha_fin)
+    print("Tickers descargados (sin filtros):", df_prices["ticker"].nunique())
 
     # Añadir fundamentales y filtrar
     df_fund = loader.download_fundamentals(tickers)
@@ -83,6 +84,7 @@ def main(args: argparse.Namespace) -> None:
         min_volume=config.volumen_medio_min,
         window=config.ventana_volumen,
     )
+    print("Tickers tras filtros:", df_prices["ticker"].nunique())
 
     # 4. Generar features y etiquetas
     fe = FeatureEngineer(config)
