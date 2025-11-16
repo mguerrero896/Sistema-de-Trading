@@ -18,6 +18,8 @@ import argparse
 from pathlib import Path
 from typing import List, Tuple
 
+import os
+import glob
 import pandas as pd
 
 from sistema_de_trading.config import Config
@@ -81,6 +83,7 @@ def main(args: argparse.Namespace) -> None:
     # Añadir fundamentales y aplicar filtros suaves
     df_fund = loader.download_fundamentals(tickers)
     df_prices = df_prices.merge(df_fund, on="ticker", how="left")
+    df_prices = df_prices.apply(lambda x: x)  # no-op para evitar warnings de encadenado
     df_prices = loader.apply_filters(
         df_prices,
         min_price=config.precio_min,
@@ -88,6 +91,54 @@ def main(args: argparse.Namespace) -> None:
         window=config.ventana_volumen,
     )
     print("Tickers tras filtros:", df_prices["ticker"].nunique())
+
+    # 3.1. Merge de features de opciones reales desde Google Drive (si existen)
+    # Ruta de Drive: Mi unidad / sistema-de-trading / archivos descargables
+    base_dir = "/content/drive/MyDrive/sistema-de-trading/archivos descargables"
+    if os.path.exists(base_dir):
+        opt_frames: List[pd.DataFrame] = []
+        unique_tickers = df_prices["ticker"].astype(str).unique()
+        for t in unique_tickers:
+            pattern = os.path.join(base_dir, f"{t}_options_trades_*.csv")
+            files = glob.glob(pattern)
+            if not files:
+                continue
+            for fp in files:
+                try:
+                    df_t = pd.read_csv(fp, parse_dates=["date"])
+                except Exception:
+                    continue
+                # Aseguramos columnas mínimas
+                cols_expected = {"date", "ticker"}
+                if not cols_expected.issubset(df_t.columns):
+                    continue
+                opt_frames.append(df_t)
+
+        if opt_frames:
+            df_opt_all = pd.concat(opt_frames, ignore_index=True)
+            # Normalizar tipos
+            df_opt_all["ticker"] = df_opt_all["ticker"].astype(str)
+            df_opt_all["date"] = pd.to_datetime(df_opt_all["date"]).dt.date
+
+            df_prices["ticker"] = df_prices["ticker"].astype(str)
+            df_prices["date"] = pd.to_datetime(df_prices["date"]).dt.date
+
+            # Eliminar posibles duplicados en opt por (date,ticker)
+            df_opt_all = df_opt_all.drop_duplicates(subset=["date", "ticker"], keep="last")
+
+            df_prices = df_prices.merge(
+                df_opt_all,
+                on=["date", "ticker"],
+                how="left",
+            )
+            print(
+                "Se han mergeado features de opciones para filas:",
+                df_prices[~df_prices.get("opt_trades_count", pd.Series(index=df_prices.index)).isna()].shape[0],
+            )
+        else:
+            print("No se encontraron CSVs de opciones compatibles en Drive; se continúa sin ellas.")
+    else:
+        print("Directorio de Google Drive no encontrado; se continúa sin features de opciones.")
 
     # 4. Features + etiquetas
     fe = FeatureEngineer(config)
