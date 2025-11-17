@@ -10,29 +10,30 @@ from polygon import RESTClient
 
 @dataclass
 class OptionsTradesConfig:
-    """Configuración para construir features diarios de opciones desde Polygon.
+    """Config para features diarios de opciones desde Polygon (por underlying+expiry).
 
     Este loader:
-    - Usa list_options_contracts() para encontrar contratos de un underlying.
-    - Usa list_trades() para construir features diarios a nivel subyacente.
-
-    NOTA:
-    - No calcula IV todavía; construye features de precio/volumen de opciones
-      como paso previo a modelos más complejos.
+    - Usa list_options_contracts(underlying_ticker, expiration_date) para obtener
+      los contratos de un vencimiento específico.
+    - Usa list_trades(ticker, date=...) para obtener trades de cada contrato
+      en cada día del rango.
     """
 
-    contracts_limit: int = 100            # máximo de contratos por underlying
-    trades_limit_per_contract: int = 50000  # máximo de trades por contrato (por día)
-    min_trades_per_day: int = 1           # mínimo de trades para considerar la fecha
+    days_before_expiry: int = 30      # días antes del vencimiento que queremos cubrir
+    days_after_expiry: int = 0        # días después del vencimiento (normalmente 0)
+    contracts_limit: int = 200        # máximo de contratos por underlying/expiry
+    trades_limit_per_contract: int = 50000  # máximo de trades por contrato y día
+    min_trades_per_day: int = 1       # mínimo de trades para considerar la fecha
 
 
 class OptionsTradesLoader:
-    """Cargador de datos históricos de opciones basado en trades de Polygon."""
+    """Cargador de features diarios de opciones para (underlying, expiry) concretos."""
 
     def __init__(self, cfg: OptionsTradesConfig) -> None:
         self.cfg = cfg
-        # RESTClient usará POLYGON_API_KEY desde la variable de entorno
-        self.client = RESTClient()
+        self.client = RESTClient()  # usa POLYGON_API_KEY del entorno
+
+    # -------------------- utilidades de fecha --------------------
 
     @staticmethod
     def _to_date(d: str | date | datetime) -> date:
@@ -42,91 +43,78 @@ class OptionsTradesLoader:
             return d.date()
         return datetime.strptime(d, "%Y-%m-%d").date()
 
-    # ------------------------------------------------------------------
-    # Obtener lista de contratos para un underlying (sin filtrar por expiry)
-    # ------------------------------------------------------------------
-    def _list_contract_tickers_for_underlying(
+    # -------------------- contratos por underlying+expiry --------------------
+
+    def _list_contract_tickers_for_expiry(
         self,
         underlying: str,
+        expiry: date,
     ) -> List[str]:
-        """Devuelve la lista de tickers de contratos de opciones para un underlying.
-
-        Usa list_options_contracts(underlying_ticker) y corta a contracts_limit.
-        """
+        """Devuelve los tickers de opciones para un underlying en un expiry concreto."""
+        expiry_str = expiry.strftime("%Y-%m-%d")
         tickers: List[str] = []
         try:
             for c in self.client.list_options_contracts(
                 underlying_ticker=underlying,
+                expiration_date=expiry_str,
                 limit=self.cfg.contracts_limit,
             ):
                 if hasattr(c, "ticker"):
                     tickers.append(c.ticker)
-                if len(tickers) >= self.cfg.contracts_limit:
-                    break
         except Exception:
             return []
         return tickers
 
-    # ------------------------------------------------------------------
-    # Obtener trades de un día para un contrato concreto
-    # ------------------------------------------------------------------
+    # -------------------- trades por día y contrato --------------------
+
     def _list_trades_for_contract_on_date(
         self,
         option_ticker: str,
         d: date,
     ) -> List:
-        """Devuelve la lista de trades para un contrato de opción en una fecha concreta."""
-        start_ts = d.strftime("%Y-%m-%d")
-        end_ts = (d + timedelta(days=1)).strftime("%Y-%m-%d")
-
+        """Devuelve trades de un contrato de opción en una fecha concreta (usando date=...)."""
+        date_str = d.strftime("%Y-%m-%d")
         trades: List = []
         try:
             for tr in self.client.list_trades(
                 option_ticker,
-                timestamp_gte=start_ts,
-                timestamp_lte=end_ts,
+                date=date_str,
+                order="asc",
                 limit=self.cfg.trades_limit_per_contract,
             ):
                 trades.append(tr)
         except Exception:
             return []
-
         return trades
 
-    # ------------------------------------------------------------------
-    # Construir features diarios para un underlying en un rango de fechas
-    # ------------------------------------------------------------------
-    def build_daily_features_for_underlying(
+    # -------------------- features diarios para underlying+expiry --------------------
+
+    def build_daily_features_for_underlying_and_expiry(
         self,
         underlying: str,
-        start_date: str | date | datetime,
-        end_date: str | date | datetime,
+        expiry_date: str | date | datetime,
     ) -> pd.DataFrame:
-        """Construye features diarios de opciones para un subyacente.
+        """Construye features diarios de opciones para (underlying, expiry).
 
-        Para cada fecha d en [start_date, end_date]:
-        - Lista contratos de opciones para el underlying (list_options_contracts).
-        - Obtiene trades de ese día para cada contrato (list_trades).
-        - Agrega todos los trades en features diarios a nivel underlying.
+        - underlying: ej. "AAPL"
+        - expiry_date: ej. "2025-11-21" (la fecha de vencimiento de los contratos)
 
-        Retorna un DataFrame con columnas:
-        ['date', 'ticker',
-         'opt_trades_count', 'opt_notional', 'opt_avg_price',
-         'opt_price_std', 'opt_min_price', 'opt_max_price']
+        El rango de fechas que se cubre es:
+            [expiry - days_before_expiry, expiry + days_after_expiry]
         """
 
-        start_d = self._to_date(start_date)
-        end_d = self._to_date(end_date)
-        if end_d < start_d:
-            raise ValueError("end_date debe ser >= start_date")
+        expiry = self._to_date(expiry_date)
+        start_d = expiry - timedelta(days=self.cfg.days_before_expiry)
+        end_d = expiry + timedelta(days=self.cfg.days_after_expiry)
 
-        # Listamos contratos una sola vez por underlying
-        contract_tickers = self._list_contract_tickers_for_underlying(underlying)
+        # 1) Obtener contratos para este underlying+expiry
+        contract_tickers = self._list_contract_tickers_for_expiry(underlying, expiry)
         if not contract_tickers:
             return pd.DataFrame(
                 columns=[
                     "date",
                     "ticker",
+                    "expiry",
                     "opt_trades_count",
                     "opt_notional",
                     "opt_avg_price",
@@ -171,6 +159,7 @@ class OptionsTradesLoader:
                 {
                     "date": current,
                     "ticker": underlying,
+                    "expiry": expiry,
                     "opt_trades_count": total_trades,
                     "opt_notional": notional,
                     "opt_avg_price": avg_price,
@@ -187,6 +176,7 @@ class OptionsTradesLoader:
                 columns=[
                     "date",
                     "ticker",
+                    "expiry",
                     "opt_trades_count",
                     "opt_notional",
                     "opt_avg_price",
@@ -198,5 +188,7 @@ class OptionsTradesLoader:
 
         df = pd.DataFrame(records)
         df["date"] = pd.to_datetime(df["date"])
+        df["expiry"] = pd.to_datetime(df["expiry"])
         return df
+
 
