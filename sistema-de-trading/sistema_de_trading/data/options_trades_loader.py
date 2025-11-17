@@ -13,7 +13,7 @@ class OptionsTradesConfig:
     """Configuración para construir features diarios de opciones desde Polygon.
 
     Este loader:
-    - Usa list_options_contracts() para encontrar contratos por underlying y vencimiento.
+    - Usa list_options_contracts() para encontrar contratos de un underlying.
     - Usa list_trades() para construir features diarios a nivel subyacente.
 
     NOTA:
@@ -21,8 +21,7 @@ class OptionsTradesConfig:
       como paso previo a modelos más complejos.
     """
 
-    days_to_expiry: int = 30              # horizonte de vencimiento objetivo (ej. +30 días)
-    contracts_limit: int = 100            # máximo de contratos por underlying/expiry
+    contracts_limit: int = 100            # máximo de contratos por underlying
     trades_limit_per_contract: int = 50000  # máximo de trades por contrato (por día)
     min_trades_per_day: int = 1           # mínimo de trades para considerar la fecha
 
@@ -43,28 +42,34 @@ class OptionsTradesLoader:
             return d.date()
         return datetime.strptime(d, "%Y-%m-%d").date()
 
-    def _list_contract_tickers_for_expiry(
+    # ------------------------------------------------------------------
+    # Obtener lista de contratos para un underlying (sin filtrar por expiry)
+    # ------------------------------------------------------------------
+    def _list_contract_tickers_for_underlying(
         self,
         underlying: str,
-        expiry: date,
     ) -> List[str]:
-        """Devuelve la lista de tickers de contratos de opciones para un underlying+expiry."""
-        expiry_str = expiry.strftime("%Y-%m-%d")
-        tickers: List[str] = []
+        """Devuelve la lista de tickers de contratos de opciones para un underlying.
 
+        Usa list_options_contracts(underlying_ticker) y corta a contracts_limit.
+        """
+        tickers: List[str] = []
         try:
             for c in self.client.list_options_contracts(
                 underlying_ticker=underlying,
-                expiration_date=expiry_str,
                 limit=self.cfg.contracts_limit,
             ):
                 if hasattr(c, "ticker"):
                     tickers.append(c.ticker)
+                if len(tickers) >= self.cfg.contracts_limit:
+                    break
         except Exception:
             return []
-
         return tickers
 
+    # ------------------------------------------------------------------
+    # Obtener trades de un día para un contrato concreto
+    # ------------------------------------------------------------------
     def _list_trades_for_contract_on_date(
         self,
         option_ticker: str,
@@ -88,30 +93,53 @@ class OptionsTradesLoader:
 
         return trades
 
+    # ------------------------------------------------------------------
+    # Construir features diarios para un underlying en un rango de fechas
+    # ------------------------------------------------------------------
     def build_daily_features_for_underlying(
         self,
         underlying: str,
         start_date: str | date | datetime,
         end_date: str | date | datetime,
     ) -> pd.DataFrame:
-        """Construye features diarios de opciones para un subyacente."""
+        """Construye features diarios de opciones para un subyacente.
+
+        Para cada fecha d en [start_date, end_date]:
+        - Lista contratos de opciones para el underlying (list_options_contracts).
+        - Obtiene trades de ese día para cada contrato (list_trades).
+        - Agrega todos los trades en features diarios a nivel underlying.
+
+        Retorna un DataFrame con columnas:
+        ['date', 'ticker',
+         'opt_trades_count', 'opt_notional', 'opt_avg_price',
+         'opt_price_std', 'opt_min_price', 'opt_max_price']
+        """
 
         start_d = self._to_date(start_date)
         end_d = self._to_date(end_date)
         if end_d < start_d:
             raise ValueError("end_date debe ser >= start_date")
 
+        # Listamos contratos una sola vez por underlying
+        contract_tickers = self._list_contract_tickers_for_underlying(underlying)
+        if not contract_tickers:
+            return pd.DataFrame(
+                columns=[
+                    "date",
+                    "ticker",
+                    "opt_trades_count",
+                    "opt_notional",
+                    "opt_avg_price",
+                    "opt_price_std",
+                    "opt_min_price",
+                    "opt_max_price",
+                ]
+            )
+
         records: List[Dict[str, object]] = []
 
         current = start_d
         while current <= end_d:
-            target_expiry = current + timedelta(days=self.cfg.days_to_expiry)
-
-            contract_tickers = self._list_contract_tickers_for_expiry(underlying, target_expiry)
-            if not contract_tickers:
-                current += timedelta(days=1)
-                continue
-
             prices: List[float] = []
             sizes: List[float] = []
 
@@ -171,3 +199,4 @@ class OptionsTradesLoader:
         df = pd.DataFrame(records)
         df["date"] = pd.to_datetime(df["date"])
         return df
+
