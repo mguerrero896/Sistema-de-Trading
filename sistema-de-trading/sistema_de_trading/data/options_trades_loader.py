@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, date
 from typing import List, Dict
 
+import os
 import pandas as pd
 from polygon import RESTClient
 
@@ -29,9 +30,19 @@ class OptionsTradesConfig:
 class OptionsTradesLoader:
     """Cargador de features diarios de opciones para (underlying, expiry) concretos."""
 
-    def __init__(self, cfg: OptionsTradesConfig) -> None:
+    def __init__(self, cfg: OptionsTradesConfig, api_key: str | None = None) -> None:
         self.cfg = cfg
-        self.client = RESTClient()  # usa POLYGON_API_KEY del entorno
+
+        # Preferimos api_key explícito; si no viene, usamos la env var.
+        if api_key is None:
+            api_key = os.getenv("POLYGON_API_KEY")
+
+        if not api_key:
+            raise ValueError(
+                "Debe proporcionar api_key al constructor o configurar POLYGON_API_KEY en el entorno."
+            )
+
+        self.client = RESTClient(api_key=api_key)
 
     # -------------------- utilidades de fecha --------------------
 
@@ -97,7 +108,7 @@ class OptionsTradesLoader:
         """Construye features diarios de opciones para (underlying, expiry).
 
         - underlying: ej. "AAPL"
-        - expiry_date: ej. "2025-11-21" (fecha de vencimiento de los contratos)
+        - expiry_date: ej. "2025-11-21"
 
         El rango de fechas que se cubre es:
             [expiry - days_before_expiry, expiry + days_after_expiry]
@@ -190,3 +201,4 @@ class OptionsTradesLoader:
         df["date"] = pd.to_datetime(df["date"])
         df["expiry"] = pd.to_datetime(df["expiry"])
         return df
+
