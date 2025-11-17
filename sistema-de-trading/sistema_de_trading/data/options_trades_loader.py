@@ -2,66 +2,47 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, date
-from typing import List, Dict
+from typing import List, Dict, Optional
 
-import os
 import pandas as pd
 from polygon import RESTClient
 
 
 @dataclass
 class OptionsTradesConfig:
-    """Config para features diarios de opciones desde Polygon (por underlying+expiry).
-
-    Este loader:
-    - Usa list_options_contracts(underlying_ticker, expiration_date) para obtener
-      los contratos de un vencimiento específico.
-    - Usa list_trades(ticker, date=...) para obtener trades de cada contrato
-      en cada día del rango.
     """
-
-    days_before_expiry: int = 30      # días antes del vencimiento que queremos cubrir
-    days_after_expiry: int = 0        # días después del vencimiento (normalmente 0)
-    contracts_limit: int = 200        # máximo de contratos por underlying/expiry
-    trades_limit_per_contract: int = 50000  # máximo de trades por contrato y día
-    min_trades_per_day: int = 1       # mínimo de trades para considerar la fecha
+    Configuration for building daily option trade features using Polygon.
+    `days_before_expiry` and `days_after_expiry` define the window around
+    the target expiry date.
+    """
+    days_before_expiry: int = 30
+    days_after_expiry: int = 0
+    contracts_limit: int = 100
+    trades_limit_per_contract: int = 50000
+    min_trades_per_day: int = 1
 
 
 class OptionsTradesLoader:
-    """Cargador de features diarios de opciones para (underlying, expiry) concretos."""
-
-    def __init__(self, cfg: OptionsTradesConfig, api_key: str | None = None) -> None:
+    """
+    Load historical option trade data from Polygon and build daily features.
+    """
+    def __init__(self, cfg: OptionsTradesConfig, api_key: Optional[str] = None) -> None:
         self.cfg = cfg
-
-        # Preferimos api_key explícito; si no viene, usamos la env var.
-        if api_key is None:
-            api_key = os.getenv("POLYGON_API_KEY")
-
-        if not api_key:
-            raise ValueError(
-                "Debe proporcionar api_key al constructor o configurar POLYGON_API_KEY en el entorno."
-            )
-
+        # Use provided API key or default to environment variable
         self.client = RESTClient(api_key=api_key)
-
-    # -------------------- utilidades de fecha --------------------
 
     @staticmethod
     def _to_date(d: str | date | datetime) -> date:
-        if isinstance(d, date) and not isinstance(d, datetime):
-            return d
         if isinstance(d, datetime):
             return d.date()
+        if isinstance(d, date):
+            return d
         return datetime.strptime(d, "%Y-%m-%d").date()
 
-    # -------------------- contratos por underlying+expiry --------------------
-
     def _list_contract_tickers_for_expiry(
-        self,
-        underlying: str,
-        expiry: date,
+        self, underlying: str, expiry: date
     ) -> List[str]:
-        """Devuelve los tickers de opciones para un underlying en un expiry concreto."""
+        """Return option contract tickers for a given underlying and expiration date."""
         expiry_str = expiry.strftime("%Y-%m-%d")
         tickers: List[str] = []
         try:
@@ -70,21 +51,21 @@ class OptionsTradesLoader:
                 expiration_date=expiry_str,
                 limit=self.cfg.contracts_limit,
             ):
-                if hasattr(c, "ticker"):
-                    tickers.append(c.ticker)
+                ticker = getattr(c, "ticker", None)
+                if ticker:
+                    tickers.append(ticker)
         except Exception:
-            return []
+            pass
         return tickers
 
-    # -------------------- trades por día y contrato --------------------
-
     def _list_trades_for_contract_on_date(
-        self,
-        option_ticker: str,
-        d: date,
+        self, option_ticker: str, trade_date: date
     ) -> List:
-        """Devuelve trades de un contrato de opción en una fecha concreta (usando date=...)."""
-        date_str = d.strftime("%Y-%m-%d")
+        """
+        Return trades for a given option contract and date.
+        Uses the `date` parameter (not timestamp_gte/lte) as per Polygon's docs.
+        """
+        date_str = trade_date.strftime("%Y-%m-%d")
         trades: List = []
         try:
             for tr in self.client.list_trades(
@@ -95,110 +76,58 @@ class OptionsTradesLoader:
             ):
                 trades.append(tr)
         except Exception:
-            return []
+            pass
         return trades
 
-    # -------------------- features diarios para underlying+expiry --------------------
-
     def build_daily_features_for_underlying_and_expiry(
-        self,
-        underlying: str,
-        expiry_date: str | date | datetime,
+        self, underlying: str, expiry: str | date | datetime
     ) -> pd.DataFrame:
-        """Construye features diarios de opciones para (underlying, expiry).
-
-        - underlying: ej. "AAPL"
-        - expiry_date: ej. "2025-11-21"
-
-        El rango de fechas que se cubre es:
-            [expiry - days_before_expiry, expiry + days_after_expiry]
         """
-
-        expiry = self._to_date(expiry_date)
-        start_d = expiry - timedelta(days=self.cfg.days_before_expiry)
-        end_d = expiry + timedelta(days=self.cfg.days_after_expiry)
-
-        # 1) Obtener contratos para este underlying+expiry
-        contract_tickers = self._list_contract_tickers_for_expiry(underlying, expiry)
-        if not contract_tickers:
-            return pd.DataFrame(
-                columns=[
-                    "date",
-                    "ticker",
-                    "expiry",
-                    "opt_trades_count",
-                    "opt_notional",
-                    "opt_avg_price",
-                    "opt_price_std",
-                    "opt_min_price",
-                    "opt_max_price",
-                ]
-            )
+        Build daily aggregated trade features for a specific underlying and expiry.
+        Returns a DataFrame with columns:
+        [date, ticker, expiry, opt_trades_count, opt_notional, opt_avg_price,
+         opt_price_std, opt_min_price, opt_max_price].
+        """
+        expiry_date = self._to_date(expiry)
+        start_d = expiry_date - timedelta(days=self.cfg.days_before_expiry)
+        end_d = expiry_date + timedelta(days=self.cfg.days_after_expiry)
 
         records: List[Dict[str, object]] = []
-
         current = start_d
+        # Cache contract tickers once per expiry
+        contract_tickers = self._list_contract_tickers_for_expiry(underlying, expiry_date)
         while current <= end_d:
             prices: List[float] = []
             sizes: List[float] = []
-
             for opt_ticker in contract_tickers:
                 trades = self._list_trades_for_contract_on_date(opt_ticker, current)
                 for tr in trades:
                     p = getattr(tr, "price", None)
                     s = getattr(tr, "size", None)
-                    if p is None or s is None:
-                        continue
-                    prices.append(float(p))
-                    sizes.append(float(s))
-
-            if len(prices) < self.cfg.min_trades_per_day:
-                current += timedelta(days=1)
-                continue
-
-            prices_ser = pd.Series(prices, dtype=float)
-            sizes_ser = pd.Series(sizes, dtype=float)
-
-            total_trades = int(len(prices))
-            notional = float((prices_ser * sizes_ser).sum())
-            avg_price = float(prices_ser.mean())
-            price_std = float(prices_ser.std(ddof=0))
-            min_price = float(prices_ser.min())
-            max_price = float(prices_ser.max())
-
-            records.append(
-                {
+                    if p is not None and s is not None:
+                        prices.append(float(p))
+                        sizes.append(float(s))
+            if len(prices) >= self.cfg.min_trades_per_day:
+                prices_ser = pd.Series(prices, dtype=float)
+                sizes_ser = pd.Series(sizes, dtype=float)
+                total_trades = len(prices)
+                notional = float((prices_ser * sizes_ser).sum())
+                avg_price = float(prices_ser.mean())
+                price_std = float(prices_ser.std(ddof=0))
+                min_price = float(prices_ser.min())
+                max_price = float(prices_ser.max())
+                records.append({
                     "date": current,
                     "ticker": underlying,
-                    "expiry": expiry,
+                    "expiry": expiry_date,
                     "opt_trades_count": total_trades,
                     "opt_notional": notional,
                     "opt_avg_price": avg_price,
                     "opt_price_std": price_std,
                     "opt_min_price": min_price,
                     "opt_max_price": max_price,
-                }
-            )
-
+                })
             current += timedelta(days=1)
+        return pd.DataFrame(records)
 
-        if not records:
-            return pd.DataFrame(
-                columns=[
-                    "date",
-                    "ticker",
-                    "expiry",
-                    "opt_trades_count",
-                    "opt_notional",
-                    "opt_avg_price",
-                    "opt_price_std",
-                    "opt_min_price",
-                    "opt_max_price",
-                ]
-            )
-
-        df = pd.DataFrame(records)
-        df["date"] = pd.to_datetime(df["date"])
-        df["expiry"] = pd.to_datetime(df["expiry"])
-        return df
 
