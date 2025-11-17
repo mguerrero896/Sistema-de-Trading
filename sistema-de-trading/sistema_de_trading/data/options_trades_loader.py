@@ -97,7 +97,7 @@ class OptionsTradesLoader:
         """Construye features diarios de opciones para (underlying, expiry).
 
         - underlying: ej. "AAPL"
-        - expiry_date: ej. "2025-11-21" (la fecha de vencimiento de los contratos)
+        - expiry_date: ej. "2025-11-21" (fecha de vencimiento de los contratos)
 
         El rango de fechas que se cubre es:
             [expiry - days_before_expiry, expiry + days_after_expiry]
@@ -190,5 +190,3 @@ class OptionsTradesLoader:
         df["date"] = pd.to_datetime(df["date"])
         df["expiry"] = pd.to_datetime(df["expiry"])
         return df
-
-
