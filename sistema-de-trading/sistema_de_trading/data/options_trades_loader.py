@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Optional
@@ -28,7 +29,16 @@ class OptionsTradesLoader:
     """
     def __init__(self, cfg: OptionsTradesConfig, api_key: Optional[str] = None) -> None:
         self.cfg = cfg
-        # Use provided API key or default to environment variable
+
+        # Prefer explicit parameter; fallback to environment variable if not provided
+        if not api_key:
+            api_key = os.getenv("POLYGON_API_KEY", "")
+
+        if not api_key:
+            raise ValueError(
+                "No se proporcionó api_key y POLYGON_API_KEY no está definida en el entorno."
+            )
+
         self.client = RESTClient(api_key=api_key)
 
     @staticmethod
