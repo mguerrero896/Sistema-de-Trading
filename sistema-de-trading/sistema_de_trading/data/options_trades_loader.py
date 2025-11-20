@@ -52,7 +52,12 @@ class OptionsTradesLoader:
     def _list_contract_tickers_for_expiry(
         self, underlying: str, expiry: date
     ) -> List[str]:
-        """Return option contract tickers for a given underlying and expiration date."""
+        """Return option contract tickers for a given underlying and expiration date.
+        
+        Note: Due to a known Polygon API issue, expiration_date filter may return
+        contracts with different expiration dates. We manually verify the expiration
+        date matches what we requested.
+        """
         expiry_str = expiry.strftime("%Y-%m-%d")
         tickers: List[str] = []
         try:
@@ -62,7 +67,9 @@ class OptionsTradesLoader:
                 limit=self.cfg.contracts_limit,
             ):
                 ticker = getattr(c, "ticker", None)
-                if ticker:
+                # Verify expiration date matches (known API issue workaround)
+                contract_expiry = getattr(c, "expiration_date", None)
+                if ticker and contract_expiry == expiry_str:
                     tickers.append(ticker)
         except Exception:
             pass
@@ -73,14 +80,29 @@ class OptionsTradesLoader:
     ) -> List:
         """
         Return trades for a given option contract and date.
-        Uses the `date` parameter (not timestamp_gte/lte) as per Polygon's docs.
+        
+        Uses timestamp_gte and timestamp_lte parameters as recommended by Polygon API.
+        Timestamps are in UTC timezone (Z suffix).
+        
+        Available fields in trade objects:
+        - price: Trade price
+        - size: Trade size (number of contracts)
+        - timestamp: Trade timestamp (nanoseconds since epoch)
+        - exchange: Exchange code
+        - conditions: Trade conditions
+        - transaction_id: Unique transaction ID
+        - tape: Tape identifier
         """
-        date_str = trade_date.strftime("%Y-%m-%d")
+        # Convert date to UTC timestamp strings
+        timestamp_gte = f"{trade_date.strftime('%Y-%m-%d')}T00:00:00Z"
+        timestamp_lte = f"{trade_date.strftime('%Y-%m-%d')}T23:59:59Z"
+        
         trades: List = []
         try:
             for tr in self.client.list_trades(
                 option_ticker,
-                date=date_str,
+                timestamp_gte=timestamp_gte,
+                timestamp_lte=timestamp_lte,
                 order="asc",
                 limit=self.cfg.trades_limit_per_contract,
             ):
