@@ -63,10 +63,8 @@ class OptionsTradesLoader:
         try:
             for c in self.client.list_options_contracts(
                 underlying_ticker=underlying,
-                params={
-                    "expiration_date.gte": expiry_str,
-                    "expiration_date.lte": expiry_str,
-                },
+                expiration_date=expiry_str,
+                expired=True,  # Required to get historical/expired contracts
                 limit=self.cfg.contracts_limit,
             ):
                 ticker = getattr(c, "ticker", None)
