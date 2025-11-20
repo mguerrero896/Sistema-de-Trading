@@ -22,15 +22,18 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 import requests
+import yfinance as yf
 
 
 class DataLoader:
     """Descarga y preprocesamiento de datos de mercado y fundamentales.
 
-    Versión basada exclusivamente en FMP para OHLC diario, aprovechando
-    el endpoint `/v3/historical-price-full/{symbol}`.
+    Usa FMP como fuente principal para OHLC diario mediante el endpoint
+    `/v3/historical-price-full/{symbol}`. Si FMP falla o no devuelve datos
+    para un ticker, utiliza yfinance como fallback.
 
-    Requiere una API key válida de FMP (Ultimate plan recomendado).
+    Requiere una API key válida de FMP (Ultimate plan recomendado) para
+    acceso completo. yfinance se usa automáticamente cuando FMP no responde.
     """
 
     # Lista estática de tickers S&P500 utilizada sólo como fallback
@@ -102,35 +105,86 @@ class DataLoader:
         except Exception:
             return None
 
+    def _yahoo_ohlc(self, ticker: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        """Fallback: descarga precios OHLCV desde Yahoo Finance si FMP no devuelve datos.
+        
+        Utiliza yfinance para obtener datos históricos cuando FMP falla o no tiene
+        información para el ticker solicitado.
+        """
+        try:
+            df = yf.download(
+                ticker,
+                start=start_date,
+                end=end_date,
+                progress=False,
+            )
+            if df is None or df.empty:
+                return None
+
+            df = df.reset_index()
+
+            # Algunas versiones usan 'Date' como columna, otras index datetime
+            if "Date" in df.columns:
+                df["date"] = pd.to_datetime(df["Date"]).dt.date
+            else:
+                df["date"] = pd.to_datetime(df.index).date
+
+            df = df.rename(
+                columns={
+                    "Open": "open",
+                    "High": "high",
+                    "Low": "low",
+                    "Close": "close",
+                    "Volume": "volume",
+                }
+            )
+
+            return df[["date", "open", "high", "low", "close", "volume"]]
+        except Exception:
+            return None
+
     def download_price_data(self, tickers: List[str], start_date: str, end_date: str) -> pd.DataFrame:
-        """Descarga precios OHLCV para una lista de tickers usando FMP.
+        """Descarga precios OHLCV para una lista de tickers usando FMP con fallback a yfinance.
+
+        Intenta primero con FMP para cada ticker. Si FMP falla o devuelve vacío,
+        usa yfinance como fallback.
 
         Devuelve un DataFrame con columnas:
         ``date, open, high, low, close, volume, ticker``.
 
-        Si no se obtiene ningún dato para ningún ticker, lanza un RuntimeError.
+        Si no se obtiene ningún dato para ningún ticker (ni desde FMP ni desde yfinance),
+        lanza un RuntimeError.
         """
         all_frames = []
         failed: List[str] = []
 
         for t in tickers:
+            # 1) Intento con FMP
             df = self._fmp_ohlc(t, start_date, end_date)
+
+            # 2) Fallback a yfinance si FMP falla o devuelve vacío
+            if df is None or df.empty:
+                df = self._yahoo_ohlc(t, start_date, end_date)
+
             if df is None or df.empty:
                 failed.append(t)
                 continue
+
             df = df.copy()
             df["ticker"] = t
             all_frames.append(df)
-            # Pequeña pausa para no saturar la API
             time.sleep(0.05)
 
         if not all_frames:
-            raise RuntimeError("No se descargaron datos de precios para los tickers indicados desde FMP.")
+            raise RuntimeError(
+                "No se descargaron datos de precios para los tickers indicados "
+                "ni desde FMP ni desde yfinance."
+            )
 
         out = pd.concat(all_frames, ignore_index=True)
 
         if failed:
-            print(f"△ Tickers sin datos de FMP ({len(failed)}): {failed}")
+            print(f"△ Tickers sin datos de FMP/yfinance ({len(failed)}): {failed}")
 
         return out
 
