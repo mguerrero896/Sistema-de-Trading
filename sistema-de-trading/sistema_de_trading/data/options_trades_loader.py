@@ -54,22 +54,23 @@ class OptionsTradesLoader:
     ) -> List[str]:
         """Return option contract tickers for a given underlying and expiration date.
         
-        Note: Due to a known Polygon API issue, expiration_date filter may return
-        contracts with different expiration dates. We manually verify the expiration
-        date matches what we requested.
+        Polygon recomienda usar filtros de fecha mediante el diccionario `params`
+        con claves `expiration_date.gte` y `expiration_date.lte` para filtrar
+        del lado del servidor.
         """
         expiry_str = expiry.strftime("%Y-%m-%d")
         tickers: List[str] = []
         try:
             for c in self.client.list_options_contracts(
                 underlying_ticker=underlying,
-                expiration_date=expiry_str,
+                params={
+                    "expiration_date.gte": expiry_str,
+                    "expiration_date.lte": expiry_str,
+                },
                 limit=self.cfg.contracts_limit,
             ):
                 ticker = getattr(c, "ticker", None)
-                # Verify expiration date matches (known API issue workaround)
-                contract_expiry = getattr(c, "expiration_date", None)
-                if ticker and contract_expiry == expiry_str:
+                if ticker:
                     tickers.append(ticker)
         except Exception:
             pass
@@ -160,6 +161,44 @@ class OptionsTradesLoader:
                     "opt_max_price": max_price,
                 })
             current += timedelta(days=1)
+        
+        # Debug messages when no contracts or trades found
+        if not contract_tickers:
+            print(
+                f"[OptionsTradesLoader] No se encontraron contratos para "
+                f"{underlying} con expiry {expiry_date}. "
+                "Verifica que exista esa expiración para el subyacente y que "
+                "tu plan de Polygon la cubra."
+            )
+        
+        if not records:
+            print(
+                f"[OptionsTradesLoader] No se encontraron trades para "
+                f"{underlying} con expiry {expiry_date} en el rango "
+                f"[{start_d}, {end_d}]. "
+                "Si estás usando una fecha de expiración futura, es normal que "
+                "no haya trades históricos."
+            )
+        
         return pd.DataFrame(records)
+
+    def debug_list_contracts(self, underlying: str, expiry: str | date | datetime) -> None:
+        """Helper method to inspect available contracts for debugging.
+        
+        Prints the number of contracts found and lists up to 20 contract tickers.
+        Useful for troubleshooting when no trades are found.
+        """
+        expiry_date = self._to_date(expiry)
+        expiry_str = expiry_date.strftime("%Y-%m-%d")
+        tickers = self._list_contract_tickers_for_expiry(underlying, expiry_date)
+        print(
+            f"[OptionsTradesLoader] Contratos para {underlying} "
+            f"con expiry {expiry_str}: {len(tickers)}"
+        )
+        if tickers:
+            print("Primeros contratos:")
+            print(tickers[:20])
+        else:
+            print("No se encontraron contratos.")
 
 
