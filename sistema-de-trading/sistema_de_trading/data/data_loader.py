@@ -3,8 +3,7 @@
 Este módulo implementa la clase :class:`DataLoader`, encargada de:
 
 * Obtener el universo de tickers (por defecto los constituyentes del S&P 500)
-* Descargar precios OHLC diarios desde Polygon.io o como alternativa desde
-  yfinance en caso de fallo o ausencia de clave API.
+* Descargar precios OHLC diarios desde FMP (Financial Modeling Prep).
 * Descargar datos fundamentales como sector, industria y capitalización de
   mercado desde Financial Modeling Prep.
 * Aplicar filtros básicos de liquidez y precio mínimo.
@@ -22,18 +21,17 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 import requests
-import yfinance as yf
+
 
 
 class DataLoader:
     """Descarga y preprocesamiento de datos de mercado y fundamentales.
 
-    Usa FMP como fuente principal para OHLC diario mediante el endpoint
-    `/v3/historical-price-full/{symbol}`. Si FMP falla o no devuelve datos
-    para un ticker, utiliza yfinance como fallback.
+    Usa FMP (Financial Modeling Prep) como fuente única para OHLC diario
+    mediante el endpoint `/v3/historical-price-full/{symbol}`.
 
-    Requiere una API key válida de FMP (Ultimate plan recomendado) para
-    acceso completo. yfinance se usa automáticamente cuando FMP no responde.
+    Requiere una API key válida de FMP Ultimate plan para acceso completo
+    a datos históricos de acciones y fundamentales.
     """
 
     # Lista estática de tickers S&P500 utilizada sólo como fallback
@@ -105,75 +103,25 @@ class DataLoader:
         except Exception:
             return None
 
-    def _yahoo_ohlc(self, ticker: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
-        """Fallback: descarga precios OHLCV desde Yahoo Finance si FMP no devuelve datos.
-        
-        Utiliza yfinance para obtener datos históricos cuando FMP falla o no tiene
-        información para el ticker solicitado.
-        """
-        try:
-            df = yf.download(
-                ticker,
-                start=start_date,
-                end=end_date,
-                progress=False,
-                auto_adjust=True,  # Avoid FutureWarning
-            )
-            if df is None or df.empty:
-                return None
 
-            df = df.reset_index()
-
-            # Handle column names - yfinance uses capitalized names
-            # Rename to lowercase to match FMP format
-            column_mapping = {}
-            for col in df.columns:
-                col_lower = str(col).lower()
-                if col_lower in ['date', 'open', 'high', 'low', 'close', 'volume']:
-                    column_mapping[col] = col_lower
-            
-            df = df.rename(columns=column_mapping)
-            
-            # Ensure date column exists
-            if 'date' not in df.columns and 'Date' in df.columns:
-                df['date'] = df['Date']
-            
-            # Convert date to date object (not datetime)
-            if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date']).dt.date
-            
-            # Select only required columns
-            required = ['date', 'open', 'high', 'low', 'close', 'volume']
-            missing = [c for c in required if c not in df.columns]
-            if missing:
-                return None
-            
-            return df[required]
-        except Exception:
-            return None
 
     def download_price_data(self, tickers: List[str], start_date: str, end_date: str) -> pd.DataFrame:
-        """Descarga precios OHLCV para una lista de tickers usando FMP con fallback a yfinance.
+        """Descarga precios OHLCV para una lista de tickers usando FMP.
 
-        Intenta primero con FMP para cada ticker. Si FMP falla o devuelve vacío,
-        usa yfinance como fallback.
+        Usa FMP (Financial Modeling Prep) como fuente única de datos.
+        Si FMP falla para un ticker, ese ticker se marca como fallido.
 
         Devuelve un DataFrame con columnas:
         ``date, open, high, low, close, volume, ticker``.
 
-        Si no se obtiene ningún dato para ningún ticker (ni desde FMP ni desde yfinance),
+        Si no se obtiene ningún dato para ningún ticker desde FMP,
         lanza un RuntimeError.
         """
         all_frames = []
         failed: List[str] = []
 
         for t in tickers:
-            # 1) Intento con FMP
             df = self._fmp_ohlc(t, start_date, end_date)
-
-            # 2) Fallback a yfinance si FMP falla o devuelve vacío
-            if df is None or df.empty:
-                df = self._yahoo_ohlc(t, start_date, end_date)
 
             if df is None or df.empty:
                 failed.append(t)
@@ -186,14 +134,14 @@ class DataLoader:
 
         if not all_frames:
             raise RuntimeError(
-                "No se descargaron datos de precios para los tickers indicados "
-                "ni desde FMP ni desde yfinance."
+                "No se descargaron datos de precios para los tickers indicados desde FMP. "
+                "Verifica tu API key y que los tickers sean válidos."
             )
 
         out = pd.concat(all_frames, ignore_index=True)
 
         if failed:
-            print(f"△ Tickers sin datos de FMP/yfinance ({len(failed)}): {failed}")
+            print(f"△ Tickers sin datos de FMP ({len(failed)}): {failed}")
 
         return out
 
