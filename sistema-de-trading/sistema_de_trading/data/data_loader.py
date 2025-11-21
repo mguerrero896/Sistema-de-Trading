@@ -117,29 +117,38 @@ class DataLoader:
                 start=start_date,
                 end=end_date,
                 progress=False,
+                auto_adjust=True,  # Avoid FutureWarning
             )
             if df is None or df.empty:
                 return None
 
             df = df.reset_index()
 
-            # Algunas versiones usan 'Date' como columna, otras index datetime
-            if "Date" in df.columns:
-                df["date"] = pd.to_datetime(df["Date"]).dt.date
-            else:
-                df["date"] = pd.to_datetime(df.index).date
-
-            df = df.rename(
-                columns={
-                    "Open": "open",
-                    "High": "high",
-                    "Low": "low",
-                    "Close": "close",
-                    "Volume": "volume",
-                }
-            )
-
-            return df[["date", "open", "high", "low", "close", "volume"]]
+            # Handle column names - yfinance uses capitalized names
+            # Rename to lowercase to match FMP format
+            column_mapping = {}
+            for col in df.columns:
+                col_lower = str(col).lower()
+                if col_lower in ['date', 'open', 'high', 'low', 'close', 'volume']:
+                    column_mapping[col] = col_lower
+            
+            df = df.rename(columns=column_mapping)
+            
+            # Ensure date column exists
+            if 'date' not in df.columns and 'Date' in df.columns:
+                df['date'] = df['Date']
+            
+            # Convert date to date object (not datetime)
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date']).dt.date
+            
+            # Select only required columns
+            required = ['date', 'open', 'high', 'low', 'close', 'volume']
+            missing = [c for c in required if c not in df.columns]
+            if missing:
+                return None
+            
+            return df[required]
         except Exception:
             return None
 
