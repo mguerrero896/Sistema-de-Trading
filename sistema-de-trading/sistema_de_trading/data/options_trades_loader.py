@@ -54,24 +54,31 @@ class OptionsTradesLoader:
     ) -> List[str]:
         """Return option contract tickers for a given underlying and expiration date.
         
-        Polygon recomienda usar filtros de fecha mediante el diccionario `params`
-        con claves `expiration_date.gte` y `expiration_date.lte` para filtrar
-        del lado del servidor.
+        Uses Polygon-recommended params dict with expiration_date.gte/lte filters.
+        Includes expired=True to retrieve historical contracts.
         """
         expiry_str = expiry.strftime("%Y-%m-%d")
         tickers: List[str] = []
         try:
             for c in self.client.list_options_contracts(
                 underlying_ticker=underlying,
-                expiration_date=expiry_str,
+                params={
+                    "expiration_date.gte": expiry_str,
+                    "expiration_date.lte": expiry_str,
+                },
                 expired=True,  # Required to get historical/expired contracts
                 limit=self.cfg.contracts_limit,
             ):
                 ticker = getattr(c, "ticker", None)
-                if ticker:
+                # Verify expiration date matches (known API issue workaround)
+                contract_expiry = getattr(c, "expiration_date", None)
+                if ticker and contract_expiry == expiry_str:
                     tickers.append(ticker)
-        except Exception:
-            pass
+        except Exception as e:
+            print(
+                f"[OptionsTradesLoader] Error listing contracts for {underlying} "
+                f"expiry {expiry_str}: {e}"
+            )
         return tickers
 
     def _list_trades_for_contract_on_date(
