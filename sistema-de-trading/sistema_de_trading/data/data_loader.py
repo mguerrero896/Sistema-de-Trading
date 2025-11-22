@@ -79,28 +79,65 @@ class DataLoader:
         """Descarga precios diarios OHLCV desde FMP para un ticker.
 
         Endpoint: /v3/historical-price-full/{symbol}?from=YYYY-MM-DD&to=YYYY-MM-DD
+        
+        Returns None if:
+        - API key is missing or invalid
+        - HTTP error occurs
+        - No historical data returned
+        - Required columns are missing
         """
+        if not self.fmp_key:
+            print(f"[DataLoader] FMP API key not configured for {ticker}")
+            return None
+            
         url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}"
-        params = {"from": start_date, "to": end_date}
-        if self.fmp_key:
-            params["apikey"] = self.fmp_key
+        params = {"from": start_date, "to": end_date, "apikey": self.fmp_key}
+        
         try:
             r = self.session.get(url, params=params, timeout=30)
-            if r.status_code != 200:
+            
+            if r.status_code == 401:
+                print(f"[DataLoader] FMP API key invalid or expired for {ticker}")
                 return None
+            elif r.status_code == 403:
+                print(f"[DataLoader] FMP API access forbidden for {ticker} (check plan limits)")
+                return None
+            elif r.status_code != 200:
+                print(f"[DataLoader] FMP API returned status {r.status_code} for {ticker}")
+                return None
+            
             j = r.json()
+            
+            # Check for API error messages
+            if "Error Message" in j:
+                print(f"[DataLoader] FMP API error for {ticker}: {j['Error Message']}")
+                return None
+            
             hist = j.get("historical", [])
             if not hist:
+                print(f"[DataLoader] No historical data from FMP for {ticker} ({start_date} to {end_date})")
                 return None
+            
             df = pd.DataFrame(hist)
-            # Asegurar columnas estándar
+            
+            # Verify required columns
             required_cols = {"date", "open", "high", "low", "close", "volume"}
             missing = required_cols - set(df.columns)
             if missing:
+                print(f"[DataLoader] Missing columns from FMP for {ticker}: {missing}")
                 return None
+            
             df["date"] = pd.to_datetime(df["date"]).dt.date
             return df[["date", "open", "high", "low", "close", "volume"]]
-        except Exception:
+            
+        except requests.exceptions.Timeout:
+            print(f"[DataLoader] FMP API timeout for {ticker}")
+            return None
+        except requests.exceptions.ConnectionError:
+            print(f"[DataLoader] FMP API connection error for {ticker}")
+            return None
+        except Exception as e:
+            print(f"[DataLoader] Unexpected error fetching {ticker} from FMP: {e}")
             return None
 
 
