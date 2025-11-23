@@ -109,6 +109,11 @@ class FeatureEngineer:
         if "opt_max_price" in df.columns and "opt_min_price" in df.columns:
             df["feat_opt_price_range"] = df["opt_max_price"] - df["opt_min_price"]
 
+        # Imputar NaN a 0 en todas las features de opciones creadas
+        opt_feat_cols = [c for c in df.columns if c.startswith("feat_opt_")]
+        if opt_feat_cols:
+            df[opt_feat_cols] = df[opt_feat_cols].fillna(0.0)
+
         return df
 
     # ------------------------------------------------------------------
