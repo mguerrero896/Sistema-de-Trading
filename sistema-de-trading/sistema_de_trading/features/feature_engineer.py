@@ -173,9 +173,21 @@ class FeatureEngineer:
 
         # Identificar columnas de features
         feat_cols = [c for c in df_feat.columns if c.startswith("feat_")]
+        
+        # Separar features core (precio/micro) de features de opciones
+        opt_cols = [c for c in feat_cols if c.startswith("feat_opt_")]
+        core_cols = [c for c in feat_cols if c not in opt_cols]
 
-        # Eliminar filas con NaN en alguna feature
-        df_feat = df_feat.dropna(subset=feat_cols).reset_index(drop=True)
+        # Solo eliminar filas con NaN en features CORE (precio/micro)
+        # Las features de opciones pueden tener NaN (se imputarán después)
+        if core_cols:
+            df_feat = df_feat.dropna(subset=core_cols)
+        
+        # Imputar NaN en features de opciones a 0 (sin actividad)
+        if opt_cols:
+            df_feat[opt_cols] = df_feat[opt_cols].fillna(0.0)
+        
+        df_feat = df_feat.reset_index(drop=True)
         return df_feat
 
     # ------------------------------------------------------------------
@@ -193,17 +205,28 @@ class FeatureEngineer:
     # Normalización
     # ------------------------------------------------------------------
     def normalize_features(self, df: pd.DataFrame, method: str = "standardize") -> pd.DataFrame:
-        """Normaliza las columnas de features por fecha."""
+        """Normaliza las columnas de features por fecha.
+        
+        Las features de opciones (feat_opt_*) se tratan como opcionales:
+        - Si existen, se normalizan junto con las demás
+        - Si tienen NaN, se imputan a 0 (sin actividad de opciones)
+        - Las features core (precio/micro) son obligatorias y se descartan si tienen NaN
+        """
         df_norm = df.copy()
 
         # Asegurar que los nombres de columnas sean strings
         df_norm.columns = [str(c) for c in df_norm.columns]
 
         feat_cols = [c for c in df_norm.columns if c.startswith("feat_")]
+        
+        # Separar features core (precio/micro) de features de opciones
+        opt_cols = [c for c in feat_cols if c.startswith("feat_opt_")]
+        core_cols = [c for c in feat_cols if c not in opt_cols]
 
         # Nos aseguramos de trabajar con fechas como string
         df_norm["date"] = df_norm["date"].astype(str)
 
+        # Normalizar todas las features (core + opciones)
         for d in df_norm["date"].unique():
             m = df_norm["date"] == d
             if method == "standardize":
@@ -212,6 +235,15 @@ class FeatureEngineer:
                 df_norm.loc[m, feat_cols] = (df_norm.loc[m, feat_cols] - mu) / (sd + 1e-8)
             else:
                 df_norm.loc[m, feat_cols] = df_norm.loc[m, feat_cols].rank(pct=True)
+        
+        # 1) Solo exigimos que las features CORE no tengan NaN
+        if core_cols:
+            df_norm = df_norm.dropna(subset=core_cols)
+        
+        # 2) Para las features de opciones, permitimos NaN y las imputamos a 0
+        if opt_cols:
+            df_norm[opt_cols] = df_norm[opt_cols].fillna(0.0)
+        
         return df_norm
 
 
