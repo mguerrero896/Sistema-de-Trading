@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Optional
@@ -15,12 +16,14 @@ class OptionsTradesConfig:
     Configuration for building daily option trade features using Polygon.
     `days_before_expiry` and `days_after_expiry` define the window around
     the target expiry date.
+    `rate_limit_sleep` controls the delay between API requests (in seconds).
     """
     days_before_expiry: int = 30
     days_after_expiry: int = 0
     contracts_limit: int = 100
     trades_limit_per_contract: int = 50000
     min_trades_per_day: int = 1
+    rate_limit_sleep: float = 0.02  # 20ms = 50 req/sec (recommended by Polygon)
 
 
 class OptionsTradesLoader:
@@ -113,6 +116,8 @@ class OptionsTradesLoader:
                 limit=self.cfg.trades_limit_per_contract,
             ):
                 trades.append(tr)
+            # Rate limiting: sleep after each API request
+            time.sleep(self.cfg.rate_limit_sleep)
         except Exception:
             pass
         return trades
