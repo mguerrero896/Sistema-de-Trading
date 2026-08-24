@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 import datetime
 from dataclasses import dataclass, field
+
+from sistema_de_trading.reloj_de_bolsa import ultima_sesion_completada
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -134,9 +136,12 @@ class Config:
     base_dir: Path = field(default_factory=lambda: Path(".").resolve())
     runs_dir: Path = field(default_factory=lambda: Path("./runs").resolve())
 
-    # Fechas de inicio y fin del histórico (se pueden ajustar según necesidad)
+    # Fechas de inicio y fin del histórico (se pueden ajustar según necesidad).
+    # La cota final es la última sesión COMPLETADA del NYSE (reloj de bolsa, no el
+    # reloj local de la máquina): en UTC+10, date.today() nombraba durante ~14 h al
+    # día una sesión de Nueva York aún abierta y colaba su barra parcial al dataset.
     fecha_inicio: str = "2005-01-01"
-    fecha_fin: str = field(default_factory=lambda: datetime.date.today().strftime("%Y-%m-%d"))
+    fecha_fin: str = field(default_factory=lambda: ultima_sesion_completada().strftime("%Y-%m-%d"))
 
     # Horizontes para etiquetas principales y comparativas
     k_principal: int = 5
